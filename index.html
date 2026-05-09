@@ -37,9 +37,9 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-    // CREDENCIAIS EXTRAÍDAS DAS SUAS FOTOS
-    const SB_URL = 'https://ntxnqfscurzwkpxkvft.supabase.co';
-    const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im50eG5xZnNjdXJ6c3drcHhrdmZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzMjE3ODAsImV4cCI6MjA5Mzg5Nzc4MH0.Eigt3i6a2IyPRJkKWIB-gt1V0k3Pm09gNcEdy3mOCUo';
+    // CREDENCIAIS ATUALIZADAS (PUBLISHABLE KEY)
+    const SB_URL = 'https://ntxnqfscurzswkpxkvft.supabase.co';
+    const SB_KEY = 'sb_publishable_vlUyAgSiVsFPFxP7XtdVCg_CHxOd5Rp';  // <--- CHAVE CORRETA
     
     const supabaseClient = supabase.createClient(SB_URL, SB_KEY);
 
@@ -70,7 +70,10 @@
         const idUnico = 'ped_' + Math.random().toString(36).substr(2, 9);
         
         const { error } = await supabaseClient.from('entregas').insert([{ id: idUnico, nome: nome, lat: 0, lng: 0 }]);
-        if(error) return alert("Erro ao conectar: " + error.message);
+        if(error) {
+            console.error("Erro ao inserir:", error);
+            return alert("Erro ao conectar: " + error.message);
+        }
 
         document.getElementById('panel-entregador').classList.add('hidden');
         document.getElementById('panel-cliente').classList.remove('hidden');
