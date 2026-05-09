@@ -28,7 +28,7 @@
         <button class="btn" onclick="iniciarRastreio()">ATIVAR GPS E GERAR LINK</button>
     </div>
     <div id="panel-cliente" class="hidden">
-        <p id="msg-status">Sinal de GPS ativo...</p>
+        <p id="msg-status">Carregando posição...</p>
         <button class="btn" style="background:#25d366" id="btn-whatsapp">Compartilhar Rastreio</button>
     </div>
 </div>
@@ -39,7 +39,7 @@
 <script>
     // CREDENCIAIS ATUALIZADAS (PUBLISHABLE KEY)
     const SB_URL = 'https://ntxnqfscurzswkpxkvft.supabase.co';
-    const SB_KEY = 'sb_publishable_vlUyAgSiVsFPFxP7XtdVCg_CHxOd5Rp';  // <--- CHAVE CORRETA
+    const SB_KEY = 'sb_publishable_vlUyAgSiVsFPFxP7XtdVCg_CHxOd5Rp';
     
     const supabaseClient = supabase.createClient(SB_URL, SB_KEY);
 
@@ -50,19 +50,53 @@
     const params = new URLSearchParams(window.location.search);
     const idEntrega = params.get('id');
 
+    // ========== LADO DO CLIENTE (quem recebe o link) ==========
     if (idEntrega) {
         document.getElementById('panel-entregador').classList.add('hidden');
         document.getElementById('panel-cliente').classList.remove('hidden');
         document.getElementById('btn-whatsapp').classList.add('hidden');
 
+        // 1. Buscar a posição atual do entregador assim que a página carrega
+        async function carregarPosicaoInicial() {
+            const { data, error } = await supabaseClient
+                .from('entregas')
+                .select('lat, lng, nome')
+                .eq('id', idEntrega)
+                .single();
+            
+            if (error) {
+                console.error("Erro ao buscar posição inicial:", error);
+                document.getElementById('msg-status').innerText = "Aguardando primeira localização...";
+                return;
+            }
+            
+            if (data && data.lat && data.lng) {
+                atualizarPosicao(data.lat, data.lng, data.nome);
+            } else {
+                document.getElementById('msg-status').innerText = "Entregador ainda não enviou localização...";
+            }
+        }
+
+        carregarPosicaoInicial();
+
+        // 2. Escutar atualizações em tempo real (Realtime)
         supabaseClient
             .channel('rastreio')
-            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'entregas', filter: `id=eq.${idEntrega}` }, 
+            .on('postgres_changes', { 
+                event: 'UPDATE', 
+                schema: 'public', 
+                table: 'entregas', 
+                filter: `id=eq.${idEntrega}` 
+            }, 
             payload => {
-                atualizarPosicao(payload.new.lat, payload.new.lng, payload.new.nome);
-            }).subscribe();
+                if (payload.new.lat && payload.new.lng) {
+                    atualizarPosicao(payload.new.lat, payload.new.lng, payload.new.nome);
+                }
+            })
+            .subscribe();
     }
 
+    // ========== LADO DO ENTREGADOR ==========
     async function iniciarRastreio() {
         const nome = document.getElementById('nome-user').value;
         if(!nome) return alert("Digite seu nome");
@@ -83,18 +117,24 @@
             window.open(`https://wa.me/?text=Siga minha entrega: ${encodeURIComponent(link)}`);
         };
 
+        // Ativar GPS e enviar atualizações
         navigator.geolocation.watchPosition(async (pos) => {
             const { latitude, longitude } = pos.coords;
             await supabaseClient.from('entregas').update({ lat: latitude, lng: longitude }).eq('id', idUnico);
             atualizarPosicao(latitude, longitude, nome);
-        }, null, { enableHighAccuracy: true });
+        }, (err) => {
+            console.error("Erro de geolocalização:", err);
+            document.getElementById('msg-status').innerText = "Erro ao acessar GPS. Verifique permissões.";
+        }, { enableHighAccuracy: true });
     }
 
+    // Função comum para atualizar o mapa e a mensagem de status
     function atualizarPosicao(lat, lng, nome) {
+        if (!lat || !lng) return;
         const p = [lat, lng];
         motoIcon.setLatLng(p);
         map.setView(p, 17);
-        document.getElementById('msg-status').innerText = `Entregador: ${nome} (Localização atualizada)`;
+        document.getElementById('msg-status').innerHTML = `Entregador: <strong>${nome}</strong> (atualizado agora)`;
     }
 </script>
 </body>
