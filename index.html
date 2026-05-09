@@ -6,18 +6,20 @@
     <title>MotoTrack Live - Rota + WhatsApp</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; background: #121212; color: white; }
-        header { background: #1c1c1c; color: #3ecf8e; padding: 15px; text-align: center; font-weight: bold; border-bottom: 1px solid #333; }
-        #map { flex: 1; width: 100%; min-height: 0; background: #333; } /* fundo cinza enquanto carrega */
-        .controls { padding: 20px; background: #1c1c1c; overflow-y: auto; max-height: 45%; }
-        .btn { background: #3ecf8e; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; color: white; margin-top: 8px; }
+        :root { --p: #3ecf8e; --d: #1c1c1c; }
+        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #121212; color: white; }
+        header { background: var(--d); color: var(--p); padding: 15px; text-align: center; font-weight: bold; border-bottom: 1px solid #333; }
+        #map { flex: 1; width: 100%; }
+        .controls { padding: 20px; background: var(--d); overflow-y: auto; max-height: 45%; }
+        .btn { background: var(--p); border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; color: white; margin-top: 8px; }
         .btn-wa { background: #25d366; }
         input, textarea { width: 100%; padding: 10px; margin-bottom: 12px; border-radius: 5px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; }
         label { font-size: 12px; color: #aaa; margin-bottom: 4px; display: block; }
         .hidden { display: none; }
         #msg-status { margin: 10px 0; color: #aaa; text-align: center; font-size: 0.9rem; }
         .coord-aviso { font-size: 12px; margin-bottom: 10px; color: #3ecf8e; }
+        .flex-row { display: flex; gap: 8px; }
+        .flex-row > * { flex: 1; }
     </style>
 </head>
 <body>
@@ -26,20 +28,27 @@
 <div id="map"></div>
 
 <div class="controls">
+    <!-- PAINEL ENTREGADOR (com novos campos) -->
     <div id="panel-entregador">
         <input type="text" id="nome-user" placeholder="Seu nome (Entregador)">
+        
         <label>📞 Telefone do cliente (com DDD, só números)</label>
         <input type="text" id="tel-cliente" placeholder="Ex: 5583999999999">
-        <label>📍 Endereço do cliente (destino)</label>
+        
+        <label>📍 Endereço do destino (cliente)</label>
         <textarea id="endereco-cliente" rows="2" placeholder="Rua, número, bairro, cidade"></textarea>
+        
         <button class="btn" id="btn-buscar-coords">🔍 Buscar coordenadas do endereço</button>
         <div id="coord-aviso" class="coord-aviso"></div>
-        <button class="btn" id="btn-iniciar">🚀 ATIVAR GPS E GERAR LINK</button>
+        
+        <button class="btn" onclick="iniciarRastreio()">🚀 ATIVAR GPS E GERAR LINK</button>
     </div>
+
+    <!-- PAINEL CLIENTE (quem recebe o link) -->
     <div id="panel-cliente" class="hidden">
         <p id="msg-status">Carregando posição...</p>
         <button class="btn btn-wa" id="btn-whatsapp-cliente">📱 Enviar link via WhatsApp</button>
-        <button class="btn" id="btn-centralizar">🎯 Centralizar</button>
+        <button class="btn" id="btn-centralizar">🎯 Centralizar no entregador</button>
     </div>
 </div>
 
@@ -47,168 +56,238 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
 <script>
-// AGUARDAR DOM PRONTO ANTES DE USAR LEAFLET
-document.addEventListener('DOMContentLoaded', () => {
-    // Inicializar mapa
-    const map = L.map('map').setView([-7.115, -34.863], 13);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map);
-    
-    // Variáveis globais do mapa
-    let motoMarker = L.marker([0,0]).addTo(map);
-    let destinoMarker = null;
-    let rotaPolyline = null;
-    let destinoCoords = null;
-    let idEntregaAtual = null;
-    
-    // Supabase
+    // ========== CREDENCIAIS (MANTIDAS) ==========
     const SB_URL = 'https://ntxnqfscurzswkpxkvft.supabase.co';
     const SB_KEY = 'sb_publishable_vlUyAgSiVsFPFxP7XtdVCg_CHxOd5Rp';
-    const supabase = supabase.createClient(SB_URL, SB_KEY);
+    const supabaseClient = supabase.createClient(SB_URL, SB_KEY);
+
+    // ========== MAPA (MESMA INICIALIZAÇÃO QUE FUNCIONAVA) ==========
+    const map = L.map('map').setView([-7.115, -34.863], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    let motoIcon = L.marker([0,0]).addTo(map);
     
-    // Utilitários
+    // NOVAS VARIÁVEIS GLOBAIS
+    let destinoMarker = null;
+    let rotaPolyline = null;
+    let destinoCoords = null;  // { lat, lng }
+
+    // ========== FUNÇÃO PARA ATUALIZAR A LINHA (ROTA) ==========
     function atualizarRota(latMoto, lngMoto, latDest, lngDest) {
         if (latDest && lngDest) {
+            // Criar ou mover marcador de destino
             if (!destinoMarker) {
-                destinoMarker = L.marker([latDest, lngDest], { 
+                destinoMarker = L.marker([latDest, lngDest], {
                     icon: L.icon({ iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', iconSize: [32,32] })
                 }).addTo(map).bindPopup("📍 Destino");
             } else {
                 destinoMarker.setLatLng([latDest, lngDest]);
             }
+            // Desenhar linha pontilhada
             if (rotaPolyline) rotaPolyline.remove();
-            rotaPolyline = L.polyline([[latMoto, lngMoto], [latDest, lngDest]], { color: '#3ecf8e', weight: 4, dashArray: '8,8' }).addTo(map);
+            rotaPolyline = L.polyline([[latMoto, lngMoto], [latDest, lngDest]], {
+                color: '#3ecf8e',
+                weight: 4,
+                dashArray: '8, 8'
+            }).addTo(map);
         } else {
             if (rotaPolyline) rotaPolyline.remove();
         }
     }
-    
+
+    // ========== FUNÇÃO COMUM DE POSIÇÃO (MODIFICADA PARA ACEITAR DESTINO) ==========
     function atualizarPosicao(lat, lng, nome, latDest = null, lngDest = null) {
         if (!lat || !lng) return;
-        motoMarker.setLatLng([lat, lng]);
-        map.setView([lat, lng], 17);
-        const msgDiv = document.getElementById('msg-status');
-        if (msgDiv) msgDiv.innerHTML = `🏍️ Entregador: <strong>${nome}</strong> | Atualizado agora`;
-        if (latDest && lngDest) atualizarRota(lat, lng, latDest, lngDest);
+        const p = [lat, lng];
+        motoIcon.setLatLng(p);
+        map.setView(p, 17);
+        document.getElementById('msg-status').innerHTML = `🏍️ Entregador: <strong>${nome}</strong> (atualizado agora)`;
+        
+        if (latDest && lngDest) {
+            atualizarRota(lat, lng, latDest, lngDest);
+        }
     }
-    
-    // Buscar coordenadas
+
+    // ========== BUSCAR COORDENADAS DO ENDEREÇO (GEOCODIFICAÇÃO) ==========
     document.getElementById('btn-buscar-coords')?.addEventListener('click', async () => {
         const endereco = document.getElementById('endereco-cliente').value;
-        if (!endereco) return alert("Digite o endereço");
+        if (!endereco) return alert("Digite o endereço do cliente");
         const aviso = document.getElementById('coord-aviso');
-        aviso.innerText = "Buscando...";
+        aviso.innerText = "🔍 Buscando coordenadas...";
         try {
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(endereco)}&limit=1`);
-            const data = await res.json();
-            if (data && data.length) {
-                destinoCoords = { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(endereco)}&limit=1`);
+            const data = await response.json();
+            if (data && data.length > 0) {
+                destinoCoords = {
+                    lat: parseFloat(data[0].lat),
+                    lng: parseFloat(data[0].lon)
+                };
                 aviso.innerText = `✅ Coordenadas: ${destinoCoords.lat.toFixed(5)}, ${destinoCoords.lng.toFixed(5)}`;
                 if (destinoMarker) destinoMarker.remove();
-                destinoMarker = L.marker([destinoCoords.lat, destinoCoords.lng]).addTo(map).bindPopup("📌 Destino (prévia)");
+                destinoMarker = L.marker([destinoCoords.lat, destinoCoords.lng]).addTo(map).bindPopup("📌 Destino (pré-visualização)");
                 map.setView([destinoCoords.lat, destinoCoords.lng], 15);
             } else {
-                aviso.innerText = "❌ Endereço não encontrado";
+                aviso.innerText = "❌ Endereço não encontrado. Tente mais completo (cidade, estado).";
                 destinoCoords = null;
             }
-        } catch(e) { aviso.innerText = "Erro na busca"; console.error(e); }
-    });
-    
-    // Iniciar entrega
-    document.getElementById('btn-iniciar')?.addEventListener('click', async () => {
-        const nome = document.getElementById('nome-user').value.trim();
-        if (!nome) return alert("Digite seu nome");
-        const telefone = document.getElementById('tel-cliente').value.trim();
-        const endereco = document.getElementById('endereco-cliente').value.trim();
-        if (endereco && !destinoCoords) {
-            return alert("Clique em 'Buscar coordenadas' antes de ativar o GPS");
+        } catch (err) {
+            console.error(err);
+            aviso.innerText = "❌ Erro na busca. Verifique sua conexão.";
         }
-        const idUnico = 'ped_' + Math.random().toString(36).substr(2, 9);
-        const { error } = await supabase.from('entregas').insert([{
-            id: idUnico, nome: nome, lat: 0, lng: 0,
-            telefone_cliente: telefone || null,
-            endereco_cliente: endereco || null,
-            lat_dest: destinoCoords?.lat || null,
-            lng_dest: destinoCoords?.lng || null
-        }]);
-        if (error) return alert("Erro: " + error.message);
-        
-        document.getElementById('panel-entregador').classList.add('hidden');
-        document.getElementById('panel-cliente').classList.remove('hidden');
-        
-        const linkCompleto = window.location.origin + window.location.pathname + "?id=" + idUnico;
-        const btnWhats = document.getElementById('btn-whatsapp-cliente');
-        if (telefone) {
-            btnWhats.onclick = () => window.open(`https://wa.me/${telefone}?text=Siga%20minha%20entrega%3A%20${encodeURIComponent(linkCompleto)}`);
-        } else {
-            btnWhats.onclick = () => alert("Nenhum telefone informado");
-        }
-        document.getElementById('btn-centralizar').onclick = () => {
-            const pos = motoMarker.getLatLng();
-            if (pos.lat !== 0) map.setView(pos, 17);
-        };
-        
-        // GPS
-        navigator.geolocation.watchPosition(async (pos) => {
-            const { latitude, longitude } = pos.coords;
-            await supabase.from('entregas').update({ lat: latitude, lng: longitude }).eq('id', idUnico);
-            atualizarPosicao(latitude, longitude, nome, destinoCoords?.lat, destinoCoords?.lng);
-        }, (err) => {
-            document.getElementById('msg-status').innerText = "❌ Permissão de localização negada";
-        }, { enableHighAccuracy: true });
     });
-    
-    // Lado cliente
-    const urlParams = new URLSearchParams(window.location.search);
-    const idEntrega = urlParams.get('id');
+
+    // ========== PARÂMETROS DA URL (CLIENTE) ==========
+    const params = new URLSearchParams(window.location.search);
+    const idEntrega = params.get('id');
+
+    // ========== LADO DO CLIENTE (quem recebe o link) - AGORA COM DESTINO E ROTA ==========
     if (idEntrega) {
         document.getElementById('panel-entregador').classList.add('hidden');
         document.getElementById('panel-cliente').classList.remove('hidden');
         
-        async function carregar() {
-            const { data, error } = await supabase.from('entregas').select('*').eq('id', idEntrega).single();
-            if (error || !data) {
-                document.getElementById('msg-status').innerText = "Entrega não encontrada";
+        // Botão centralizar (novo)
+        document.getElementById('btn-centralizar').onclick = () => {
+            const pos = motoIcon.getLatLng();
+            if (pos.lat !== 0) map.setView(pos, 17);
+        };
+
+        // 1. Buscar posição inicial + dados do destino
+        async function carregarPosicaoInicial() {
+            const { data, error } = await supabaseClient
+                .from('entregas')
+                .select('lat, lng, nome, telefone_cliente, lat_dest, lng_dest')
+                .eq('id', idEntrega)
+                .single();
+            
+            if (error) {
+                console.error("Erro ao buscar:", error);
+                document.getElementById('msg-status').innerText = "Aguardando primeira localização...";
                 return;
             }
-            if (data.lat && data.lng) atualizarPosicao(data.lat, data.lng, data.nome, data.lat_dest, data.lng_dest);
-            if (data.lat_dest && data.lng_dest) {
-                if (destinoMarker) destinoMarker.remove();
-                destinoMarker = L.marker([data.lat_dest, data.lng_dest], { icon: L.icon({ iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', iconSize: [32,32] }) }).addTo(map).bindPopup("📍 Destino");
-                if (data.lat && data.lng) atualizarRota(data.lat, data.lng, data.lat_dest, data.lng_dest);
-            }
+            
+            // Configurar botão WhatsApp do cliente com o número salvo (se houver)
             const btnWa = document.getElementById('btn-whatsapp-cliente');
             if (data.telefone_cliente) {
-                btnWa.onclick = () => window.open(`https://wa.me/${data.telefone_cliente}?text=Acompanhe%20a%20entrega%3A%20${encodeURIComponent(window.location.href)}`);
+                const linkAtual = window.location.href;
+                btnWa.onclick = () => {
+                    window.open(`https://wa.me/${data.telefone_cliente}?text=Acompanhe%20a%20entrega%3A%20${encodeURIComponent(linkAtual)}`);
+                };
             } else {
-                btnWa.onclick = () => alert("Entregador não forneceu telefone");
+                btnWa.onclick = () => alert("Entregador não forneceu telefone do cliente.");
             }
-            document.getElementById('btn-centralizar').onclick = () => {
-                const pos = motoMarker.getLatLng();
-                if (pos.lat !== 0) map.setView(pos, 17);
-            };
             
-            // Realtime
-            supabase.channel('cliente-' + idEntrega)
-                .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'entregas', filter: `id=eq.${idEntrega}` }, payload => {
-                    const n = payload.new;
-                    if (n.lat && n.lng) atualizarPosicao(n.lat, n.lng, n.nome, n.lat_dest, n.lng_dest);
-                }).subscribe();
+            // Atualizar mapa com posição e destino
+            if (data.lat && data.lng) {
+                atualizarPosicao(data.lat, data.lng, data.nome, data.lat_dest, data.lng_dest);
+            } else {
+                document.getElementById('msg-status').innerText = "Entregador ainda não enviou localização...";
+            }
+            
+            // Se houver destino, já deixar visível
+            if (data.lat_dest && data.lng_dest) {
+                if (destinoMarker) destinoMarker.remove();
+                destinoMarker = L.marker([data.lat_dest, data.lng_dest], {
+                    icon: L.icon({ iconUrl: 'https://cdn-icons-png.flaticon.com/512/684/684908.png', iconSize: [32,32] })
+                }).addTo(map).bindPopup("📍 Destino");
+                if (data.lat && data.lng) atualizarRota(data.lat, data.lng, data.lat_dest, data.lng_dest);
+            }
         }
-        carregar();
+        carregarPosicaoInicial();
+
+        // 2. Escutar atualizações em tempo real (Realtime)
+        supabaseClient
+            .channel('rastreio')
+            .on('postgres_changes', { 
+                event: 'UPDATE', 
+                schema: 'public', 
+                table: 'entregas', 
+                filter: `id=eq.${idEntrega}` 
+            }, 
+            async (payload) => {
+                const novo = payload.new;
+                if (novo.lat && novo.lng) {
+                    atualizarPosicao(novo.lat, novo.lng, novo.nome, novo.lat_dest, novo.lng_dest);
+                }
+            })
+            .subscribe();
+    }
+
+    // ========== LADO DO ENTREGADOR (COM DADOS ADICIONAIS) ==========
+    async function iniciarRastreio() {
+        const nome = document.getElementById('nome-user').value.trim();
+        if(!nome) return alert("Digite seu nome");
+        
+        const telefoneCliente = document.getElementById('tel-cliente').value.trim();
+        const enderecoCliente = document.getElementById('endereco-cliente').value.trim();
+        
+        // Se o usuário preencheu endereço mas não buscou coordenadas, avisar
+        if (enderecoCliente && !destinoCoords) {
+            return alert("Clique em 'Buscar coordenadas' para validar o endereço antes de ativar o GPS.");
+        }
+        
+        const idUnico = 'ped_' + Math.random().toString(36).substr(2, 9);
+        
+        // Inserir no Supabase com os novos campos
+        const { error } = await supabaseClient.from('entregas').insert([{ 
+            id: idUnico, 
+            nome: nome, 
+            lat: 0, 
+            lng: 0,
+            telefone_cliente: telefoneCliente || null,
+            endereco_cliente: enderecoCliente || null,
+            lat_dest: destinoCoords ? destinoCoords.lat : null,
+            lng_dest: destinoCoords ? destinoCoords.lng : null
+        }]);
+        
+        if(error) {
+            console.error("Erro ao inserir:", error);
+            return alert("Erro ao conectar: " + error.message);
+        }
+
+        document.getElementById('panel-entregador').classList.add('hidden');
+        document.getElementById('panel-cliente').classList.remove('hidden');
+
+        const link = window.location.origin + window.location.pathname + "?id=" + idUnico;
+        
+        // Botão WhatsApp: se tiver telefone, envia direto; senão, abre para escolher contato
+        const btnWhats = document.getElementById('btn-whatsapp-cliente');
+        if (telefoneCliente) {
+            btnWhats.onclick = () => {
+                window.open(`https://wa.me/${telefoneCliente}?text=Siga minha entrega: ${encodeURIComponent(link)}`);
+            };
+        } else {
+            btnWhats.onclick = () => {
+                window.open(`https://wa.me/?text=Siga minha entrega: ${encodeURIComponent(link)}`);
+            };
+        }
+        
+        // Botão centralizar para o próprio entregador também (opcional)
+        document.getElementById('btn-centralizar').onclick = () => {
+            const pos = motoIcon.getLatLng();
+            if (pos.lat !== 0) map.setView(pos, 17);
+        };
+
+        // Ativar GPS e enviar atualizações (agora incluindo destino para desenhar a rota)
+        navigator.geolocation.watchPosition(async (pos) => {
+            const { latitude, longitude } = pos.coords;
+            await supabaseClient.from('entregas').update({ lat: latitude, lng: longitude }).eq('id', idUnico);
+            atualizarPosicao(latitude, longitude, nome, destinoCoords?.lat, destinoCoords?.lng);
+        }, (err) => {
+            console.error("Erro de geolocalização:", err);
+            document.getElementById('msg-status').innerText = "Erro ao acessar GPS. Verifique permissões.";
+        }, { enableHighAccuracy: true });
     }
     
-    // Clique no mapa para definir destino (apenas para entregador em modo criação)
-    map.on('click', (e) => {
+    // CLIQUE NO MAPA PARA DEFINIR DESTINO (apenas modo entregador)
+    map.on('click', function(e) {
         const panelEntregador = document.getElementById('panel-entregador');
         if (panelEntregador && !panelEntregador.classList.contains('hidden')) {
             destinoCoords = { lat: e.latlng.lat, lng: e.latlng.lng };
-            document.getElementById('coord-aviso').innerHTML = `✅ Destino definido: ${destinoCoords.lat.toFixed(5)}, ${destinoCoords.lng.toFixed(5)}`;
+            document.getElementById('coord-aviso').innerHTML = `✅ Destino definido no mapa: ${destinoCoords.lat.toFixed(5)}, ${destinoCoords.lng.toFixed(5)}`;
             document.getElementById('endereco-cliente').value = `Coordenadas: ${destinoCoords.lat.toFixed(5)}, ${destinoCoords.lng.toFixed(5)}`;
             if (destinoMarker) destinoMarker.remove();
             destinoMarker = L.marker([destinoCoords.lat, destinoCoords.lng]).addTo(map).bindPopup("📌 Destino (clique)");
         }
     });
-});
 </script>
 </body>
 </html>
