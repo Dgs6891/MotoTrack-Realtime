@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MotoTrack Live - Teste Realtime</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        :root { --p: #3ecf8e; --d: #1c1c1c; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #121212; color: white; }
+        header { background: var(--d); color: var(--p); padding: 15px; text-align: center; font-weight: bold; border-bottom: 1px solid #333; }
+        #map { flex: 1; width: 100%; z-index: 1; }
+        .controls { padding: 20px; background: var(--d); box-shadow: 0 -2px 10px rgba(0,0,0,0.5); z-index: 10; }
+        .btn { background: var(--p); border: none; padding: 15px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; color: white; font-size: 1rem; transition: filter 0.2s; }
+        .btn:active { filter: brightness(0.8); }
+        input { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #333; background: #222; color: white; box-sizing: border-box; font-size: 1rem; }
+        .hidden { display: none; }
+        #msg-status { margin: 10px 0; color: #aaa; font-size: 0.9rem; text-align: center; }
+    </style>
+</head>
+<body>
+
+<header>MOTOTRACK LIVE - SUPABASE</header>
+<div id="map"></div>
+
+<div class="controls">
+    <div id="panel-entregador">
+        <input type="text" id="nome-user" placeholder="Seu nome (Entregador)">
+        <button class="btn" onclick="iniciarRastreio()">ATIVAR GPS E GERAR LINK</button>
+    </div>
+
+    <div id="panel-cliente" class="hidden">
+        <p id="msg-status">Sinal de GPS ativo...</p>
+        <button class="btn" style="background:#25d366" id="btn-whatsapp">Compartilhar no WhatsApp</button>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+    // --- CONFIGURAÇÃO JÁ COM SUAS CHAVES ---
+    const SB_URL = 'https://ntxnqfscurzwkpxkvft.supabase.co';
+    const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im50eG5xZnNjdXJ6c3drcHhrdmZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgzMjE3ODAsImV4cCI6MjA5Mzg5Nzc4MH0.Eigt3i6a2IyPRJkKWIB-gt1V0k3Pm09gNcEdy3mOCUo';
+    
+    const supabaseClient = supabase.createClient(SB_URL, SB_KEY);
+
+    // Inicialização do Mapa (Focado em João Pessoa por padrão)
+    const map = L.map('map').setView([-7.115, -34.863], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    let motoIcon = L.marker([0,0]).addTo(map);
+
+    // Lógica para diferenciar Cliente de Entregador
+    const params = new URLSearchParams(window.location.search);
+    const idEntrega = params.get('id');
+
+    if (idEntrega) {
+        // MODO CLIENTE: Apenas visualiza
+        document.getElementById('panel-entregador').classList.add('hidden');
+        document.getElementById('panel-cliente').classList.remove('hidden');
+        document.getElementById('btn-whatsapp').classList.add('hidden');
+        document.getElementById('msg-status').innerText = "Acompanhando entrega em tempo real...";
+
+        // Escuta mudanças na tabela 'entregas' para o ID específico
+        supabaseClient
+            .channel('rastreio-ao-vivo')
+            .on('postgres_changes', { 
+                event: 'UPDATE', 
+                schema: 'public', 
+                table: 'entregas', 
+                filter: `id=eq.${idEntrega}` 
+            }, payload => {
+                const { lat, lng, nome } = payload.new;
+                atualizarInterface(lat, lng, nome);
+            }).subscribe();
+            
+        carregarPosicaoInicial(idEntrega);
+    }
+
+    async function carregarPosicaoInicial(id) {
+        const { data } = await supabaseClient.from('entregas').select('*').eq('id', id).single();
+        if(data) atualizarInterface(data.lat, data.lng, data.nome);
+    }
+
+    // MODO ENTREGADOR: Envia a posição para o Supabase
+    async function iniciarRastreio() {
+        const nome = document.getElementById('nome-user').value;
+        if(!nome) return alert("Por favor, digite seu nome.");
+
+        const idUnico = 'ped_' + Math.random().toString(36).substr(2, 9);
+        
+        // Cria o registro inicial
+        const { error } = await supabaseClient.from('entregas').insert([
+            { id: idUnico, nome: nome, lat: 0, lng: 0 }
+        ]);
+
+        if(error) return alert("Erro: " + error.message);
+
+        document.getElementById('panel-entregador').classList.add('hidden');
+        document.getElementById('panel-cliente').classList.remove('hidden');
+
+        const linkRastreio = window.location.origin + window.location.pathname + "?id=" + idUnico;
+        
+        document.getElementById('btn-whatsapp').onclick = () => {
+            const texto = `Olá! Acompanhe minha entrega em tempo real por aqui: ${linkRastreio}`;
+            window.open(`https://wa.me/?text=${encodeURIComponent(texto)}`);
+        };
+
+        // Ativa o GPS do celular
+        navigator.geolocation.watchPosition(async (pos) => {
+            const { latitude, longitude } = pos.coords;
+            
+            // Atualiza o banco de dados
+            await supabaseClient.from('entregas')
+                .update({ lat: latitude, lng: longitude })
+                .eq('id', idUnico);
+            
+            atualizarInterface(latitude, longitude, nome);
+        }, null, { enableHighAccuracy: true });
+    }
+
+    function atualizarInterface(lat, lng, nome) {
+        const pos = [lat, lng];
+        motoIcon.setLatLng(pos);
+        map.setView(pos, 17);
+        document.getElementById('msg-status').innerText = `Entregador: ${nome} (Sinal ativo)`;
+    }
+</script>
+</body>
+</html>
